@@ -1,0 +1,17 @@
+{
+  "total": 87599,
+  "success": 49094,
+  "entity_type_PERSON": 9775,
+  "entity_type_GPE": 6292,
+  "skip_no_replacement": 7179,
+  "entity_type_DATE": 9997,
+  "skip_no_entity_match": 30977,
+  "entity_type_ORG": 10114,
+  "entity_type_CARDINAL": 6568,
+  "entity_type_NORP": 4004,
+  "entity_type_EVENT": 715,
+  "entity_type_LOC": 1629,
+  "skip_answer_too_short": 201,
+  "skip_quality_new_entity_already_in_original": 103,
+  "skip_quality_too_many_occurrences": 45
+}
