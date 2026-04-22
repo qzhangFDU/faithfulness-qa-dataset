@@ -257,7 +257,7 @@ If you use this dataset in your research, please cite:
 ```bibtex
 @misc{zhang2026faithfulnessqa,
   title={Faithfulness-QA: A Counterfactual Entity Substitution Dataset for Training Context-Faithful RAG Models},
-  author={Zhang, Qiang},
+  author={Zhang, Qi},
   year={2026},
   url={https://github.com/qzhangFDU/faithfulness-qa-dataset}
 }
