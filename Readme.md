@@ -1,214 +1,278 @@
-# Faithfulness-QA: 构建反事实实体替换数据集以训练忠实于 Context 的 RAG 模型
+# Faithfulness-QA: A Counterfactual Entity Substitution Dataset for Training Context-Faithful RAG Models
 
-## 1. Idea 概述
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Dataset: 99K](https://img.shields.io/badge/Dataset-99K_samples-blue.svg)]()
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-yellow.svg)]()
 
-### 1.1 问题动机
+## 📖 Overview
 
-当前 RAG（Retrieval-Augmented Generation）系统面临一个核心问题：模型在生成回答时往往不依赖检索到的文档（context），而是依赖自身参数化知识，甚至产生幻觉。这种"不忠实"现象的根本原因在于——标准的语言模型训练 loss（next-token prediction）不区分生成内容来源于 context 还是参数记忆，缺少对忠实性的显式约束。
+**Faithfulness-QA** is a large-scale dataset of **99,094** question–answer pairs designed to train and evaluate the faithfulness of Retrieval-Augmented Generation (RAG) models to retrieved context.
 
-现有方法如 Self-RAG 通过反思 token 让模型自我审查，CoCoLex 通过推理时的解码策略强制从 context 复制，FaithfulRAG 通过事实级冲突建模。但这些方法要么依赖模型自身判断的可靠性，要么只在推理时打补丁而非从根本上改变模型行为，要么不直接约束注意力机制。
+The core idea is **counterfactual entity substitution**: for each QA sample, we replace the answer-bearing entity in the context with a type-consistent alternative, creating a controlled conflict between the context and the model's parametric knowledge. A faithful model should output the *replacement* entity (from context), not the *original* entity (from memory).
 
-**我们的核心洞察**：要让模型真正"忠实"，需要在训练 loss 中直接加入 attention-based faithfulness 约束，将忠实性刻入模型权重。而实现这一目标的第一步，是构建一个专门设计的训练数据集——**Faithfulness-QA**。
+<p align="center">
+  <img src="https://img.shields.io/badge/SQuAD-49%2C094_samples-blue" alt="SQuAD"/>
+  <img src="https://img.shields.io/badge/TriviaQA-50%2C000_samples-red" alt="TriviaQA"/>
+  <img src="https://img.shields.io/badge/Entity_Bank-76%2C953_entities-green" alt="Entity Bank"/>
+  <img src="https://img.shields.io/badge/Quality-100%25_pass-brightgreen" alt="Quality"/>
+</p>
 
-### 1.2 核心想法
+## 🔑 Key Features
 
-Faithfulness-QA 数据集的核心设计思路是**反事实实体替换**（Counterfactual Entity Substitution）：
+- **99K counterfactual QA samples** from SQuAD (49,094) and TriviaQA (50,000)
+- **8 entity types** covered: PERSON, ORG, GPE, DATE, CARDINAL, NORP, LOC, EVENT
+- **76,953 unique entities** in the curated entity bank
+- **100% quality pass rate** on 200-sample automated audits
+- **Ready-to-use train/dev/test splits** (80/10/10)
+- **Fully automated pipeline** — reproducible from source datasets
 
-基于现有的 QA 数据集（如 Natural Questions、TriviaQA），我们对 context 中的关键实体进行随机替换，使其与模型参数化知识产生冲突。例如，将"2024年诺贝尔物理学奖授予了 Geoffrey Hinton"中的"Geoffrey Hinton"替换为"Yann LeCun"。在这种设置下，如果模型训练后仍然输出 context 中的替换实体，则说明模型学会了忠实于 context。
+## 📊 Dataset Statistics
 
-这种数据构造方式有三个关键优势：
+### Overall
 
-1. **制造可控的知识冲突**：精确地创造 context 与参数知识之间的矛盾
-2. **提供天然的忠实性评估信号**：替换实体 vs 原始实体的选择直接反映忠实程度
-3. **支持 attention-based loss 训练**：数据中有明确的 context 区域，可以监督 attention 指向
+| Source | Input | Output | Success Rate | Train | Dev | Test |
+|--------|-------|--------|-------------|-------|-----|------|
+| SQuAD | 87,599 | 49,094 | 56.0% | 39,275 | 4,909 | 4,910 |
+| TriviaQA | 87,041 | 50,000 | 57.4% | 40,000 | 5,000 | 5,000 |
+| **Total** | **174,640** | **99,094** | **56.7%** | **79,275** | **9,909** | **9,910** |
 
-### 1.3 方法概述
+### Entity Type Distribution
 
-整体框架分为四个步骤：
+| Type | SQuAD | SQuAD % | TriviaQA | TriviaQA % |
+|------|-------|---------|----------|------------|
+| PERSON | 9,775 | 19.9% | 22,871 | 45.7% |
+| ORG | 10,114 | 20.6% | 8,186 | 16.4% |
+| DATE | 9,997 | 20.4% | 2,057 | 4.1% |
+| GPE | 6,292 | 12.8% | 11,810 | 23.6% |
+| CARDINAL | 6,568 | 13.4% | 1,348 | 2.7% |
+| NORP | 4,004 | 8.2% | 1,247 | 2.5% |
+| LOC | 1,629 | 3.3% | 1,952 | 3.9% |
+| EVENT | 715 | 1.5% | 529 | 1.1% |
 
-**Step 1: 基础数据选取**
-从现有开放域 QA 数据集中筛选包含明确事实性回答的样本（query, context, answer）三元组。
+> **Complementarity**: TriviaQA is dominated by PERSON entities (45.7%), while SQuAD provides balanced coverage across ORG, DATE, PERSON, and CARDINAL. Combining both yields broad entity-type diversity.
 
-**Step 2: 实体识别与分类**
-对 context 中的实体进行 NER（命名实体识别），按类型分类：人名、地名、组织、数字、日期等。
+### Entity Bank
 
-**Step 3: 反事实实体替换**
-对包含答案的关键实体进行同类型随机替换，并同步修改 answer。替换规则：
+| Type | Count |
+|------|-------|
+| ORG | 25,378 |
+| PERSON | 20,292 |
+| DATE | 10,613 |
+| GPE | 6,769 |
+| CARDINAL | 6,636 |
+| LOC | 2,977 |
+| NORP | 2,849 |
+| EVENT | 1,439 |
+| **Total** | **76,953** |
 
-- 人名 → 同领域其他人名（如科学家替换为科学家）
-- 地名 → 其他地名
-- 数字/日期 → 随机生成同格式数值
-- 确保替换后文本语法通顺、语义自洽
+## 📁 Repository Structure
 
-**Step 4: 质量检验与过滤**
+```
+faithfulness-qa-dataset/
+├── code/
+│   ├── entity_bank.py          # Entity bank construction & management
+│   ├── build_dataset.py        # Main pipeline (SQuAD processing)
+│   ├── build_triviaqa.py       # TriviaQA pipeline (streaming mode)
+│   └── quality_analysis.py     # Quality analysis & statistics
+├── data/
+│   ├── entity_bank/            # Typed entity bank (76,953 entities)
+│   │   ├── PERSON.json         # 20,292 person entities
+│   │   ├── ORG.json            # 25,378 organization entities
+│   │   ├── GPE.json            # 6,769 geo-political entities
+│   │   ├── DATE.json           # 10,613 date entities
+│   │   ├── CARDINAL.json       # 6,636 cardinal number entities
+│   │   ├── NORP.json           # 2,849 nationality/group entities
+│   │   ├── LOC.json            # 2,977 location entities
+│   │   ├── EVENT.json          # 1,439 event entities
+│   │   └── summary.json        # Entity bank statistics
+│   ├── faithfulness_qa_squad_raw.jsonl      # SQuAD raw (49,094)
+│   ├── faithfulness_qa_squad_train.jsonl    # SQuAD train (39,275)
+│   ├── faithfulness_qa_squad_dev.jsonl      # SQuAD dev (4,909)
+│   ├── faithfulness_qa_squad_test.jsonl     # SQuAD test (4,910)
+│   ├── faithfulness_triviaqa_raw.jsonl      # TriviaQA raw (50,000)
+│   ├── faithfulness_triviaqa_train.jsonl    # TriviaQA train (40,000)
+│   ├── faithfulness_triviaqa_dev.jsonl      # TriviaQA dev (5,000)
+│   ├── faithfulness_triviaqa_test.jsonl     # TriviaQA test (5,000)
+│   ├── build_stats.json                     # SQuAD build statistics
+│   └── triviaqa_build_stats.json            # TriviaQA build statistics
+└── README.md
+```
 
-- 过滤替换后语义不通的样本
-- 确保替换实体与原始实体不同
-- 验证替换后的 answer 在新 context 中有且仅有唯一对应
+## 📋 Data Format
 
-伪代码：
+Each sample is a JSON object in JSONL format:
+
+```json
+{
+  "id": "5733be284776f41900661182",
+  "question": "To whom did the Virgin Mary allegedly appear in 1858 in Lourdes France?",
+  "original_context": "...the Virgin Mary reputedly appeared to Saint Bernadette Soubirous in 1858...",
+  "modified_context": "...the Virgin Mary reputedly appeared to Kiyomori in 1858...",
+  "original_answer": "Saint Bernadette Soubirous",
+  "faithful_answer": "Kiyomori",
+  "original_entity": "Saint Bernadette Soubirous",
+  "replacement_entity": "Kiyomori",
+  "entity_type": "PERSON",
+  "source": "squad"
+}
+```
+
+### Field Descriptions
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Original sample ID from the source dataset |
+| `question` | string | The question text |
+| `original_context` | string | Unmodified context from the source dataset |
+| `modified_context` | string | Context after counterfactual entity substitution |
+| `original_answer` | string | Ground-truth answer from the source dataset |
+| `faithful_answer` | string | Correct answer given the modified context (= replacement entity) |
+| `original_entity` | string | The named entity that was replaced |
+| `replacement_entity` | string | The new entity substituted in |
+| `entity_type` | string | NER type: `PERSON`, `GPE`, `ORG`, `DATE`, `CARDINAL`, `NORP`, `LOC`, or `EVENT` |
+| `source` | string | Source dataset: `squad` or `triviaqa` |
+
+## 🚀 Quick Start
+
+### Loading the Dataset
 
 ```python
-def build_faithfulness_qa(source_dataset):
-    faithfulness_qa = []
-    for (query, context, answer) in source_dataset:
-        entities = ner_model.extract(context)
-        answer_entity = find_answer_entity(entities, answer)
-        if answer_entity is None:
-            continue
-        new_entity = sample_same_type(answer_entity, entity_bank)
-        new_context = context.replace(answer_entity, new_entity)
-        new_answer = new_entity
-        if quality_check(new_context, new_answer, query):
-            faithfulness_qa.append({
-                "query": query,
-                "original_context": context,
-                "modified_context": new_context,
-                "original_answer": answer,
-                "faithful_answer": new_answer,
-                "replaced_entity_type": answer_entity.type,
-            })
-    return faithfulness_qa
+import json
+
+# Load training data
+train_data = []
+with open("data/faithfulness_qa_squad_train.jsonl") as f:
+    for line in f:
+        train_data.append(json.loads(line))
+
+print(f"Loaded {len(train_data)} training samples")
+
+# Example: create RAG-style training input
+sample = train_data[0]
+prompt = f"""Context: {sample['modified_context']}
+
+Question: {sample['question']}
+
+Answer:"""
+
+target = sample['faithful_answer']  # Model should output this
 ```
 
-### 1.4 理论依据
+### Evaluating Model Faithfulness
 
-反事实实体替换的有效性基于以下推理：
+```python
+def compute_faithfulness_rate(model, test_data):
+    """Measure how often the model follows context over parametric memory."""
+    faithful_count = 0
+    parametric_count = 0
 
-- 如果 context 中的事实与模型参数知识一致，我们无法区分模型是"忠实于 context"还是"恰好知道答案"
-- 只有当 context 内容与参数知识冲突时，模型的选择才能真正反映其忠实性
-- 实体替换是制造这种冲突的最小干预——它改变事实但保留语义结构，控制变量最少
+    for sample in test_data:
+        prediction = model.generate(
+            context=sample['modified_context'],
+            question=sample['question']
+        )
+        if sample['faithful_answer'].lower() in prediction.lower():
+            faithful_count += 1
+        elif sample['original_answer'].lower() in prediction.lower():
+            parametric_count += 1
 
-### 1.5 预期贡献
-
-1. **发布 Faithfulness-QA 数据集**：包含 ~50K 反事实实体替换的 QA 样本，支持 RAG 忠实性训练与评估
-2. **提供数据构建 pipeline**：可复现的自动化工具，支持从任意 QA 数据集生成反事实版本
-3. **建立忠实性评估基准**：利用原始实体 vs 替换实体的选择率，提供量化忠实性的直接指标
-4. **为后续 attention-based faithfulness loss 训练提供数据基础**
-
-### 1.6 相关工作定位
-
-- **Self-RAG** [1] 通过训练反思 token 来判断生成是否有 context 支撑，但不直接约束 attention，且依赖模型自我判断的可靠性
-- **FaithfulRAG** [2] 在事实层面建模知识冲突，但其关注点是推理时的冲突调和而非训练数据的系统性构造
-- **CoCoLex** [3] 使用推理时的 copy-based 解码策略，是 inference-time 方案而非 training-time 方案
-- **CounterFact** [4] 数据集也涉及反事实实体，但其目的是知识编辑（knowledge editing），而非 RAG 忠实性训练
-- 本工作与上述工作的关键区别：**专门为 RAG 忠实性训练设计的反事实数据集，配合后续 attention-based loss 使用**
-
-### 1.7 参考文献
-
-- [1] Asai et al., "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection", ICLR, 2024. https://arxiv.org/abs/2310.11511
-- [2] Li et al., "FaithfulRAG: Fact-level Conflict Modeling for Context-faithful Retrieval-Augmented Generation", ACL, 2025. https://aclanthology.org/2025.acl-long.1062/
-- [3] Santosh et al., "CoCoLex: Confidence-guided Copy-based Decoding for Grounded Legal Text Generation", ACL, 2025. https://arxiv.org/abs/2508.05534
-- [4] Meng et al., "Locating and Editing Factual Associations in GPT", NeurIPS, 2022. https://arxiv.org/abs/2202.05262
-
-# Faithfulness-QA 数据集构建结果分析
-
-## 实验概述
-
-- 执行日期: 2026-04-19
-- 执行环境: CPU (无 GPU)
-- 基于计划: proposal_experiment_plan.md
-- NER 模型: SpaCy en_core_web_lg
-
-## 主要结果
-
-### 数据集总览
-
-| 数据集                | Raw 样本数 | Train      | Dev       | Test      | 输入数      | 成功率     |
-| --------------------- | ---------- | ---------- | --------- | --------- | ----------- | ---------- |
-| Faithfulness-SQuAD    | 49,094     | 39,275     | 4,909     | 4,910     | 87,599      | 56.0%      |
-| Faithfulness-TriviaQA | 50,000     | 40,000     | 5,000     | 5,000     | 87,041      | 57.4%      |
-| **合计**              | **99,094** | **79,275** | **9,909** | **9,910** | **174,640** | **~56.7%** |
-
-### 实体类型分布
-
-#### Faithfulness-SQuAD
-
-| Entity Type | Count  | Percentage |
-| ----------- | ------ | ---------- |
-| PERSON      | 14,682 | 29.9%      |
-| CARDINAL    | 8,773  | 17.9%      |
-| GPE         | 7,479  | 15.2%      |
-| ORG         | 7,100  | 14.5%      |
-| DATE        | 5,614  | 11.4%      |
-| NORP        | 3,225  | 6.6%       |
-| LOC         | 1,419  | 2.9%       |
-| EVENT       | 802    | 1.6%       |
-
-#### Faithfulness-TriviaQA
-
-| Entity Type | Count  | Percentage |
-| ----------- | ------ | ---------- |
-| PERSON      | 22,871 | 45.7%      |
-| GPE         | 11,810 | 23.6%      |
-| ORG         | 8,186  | 16.4%      |
-| DATE        | 2,057  | 4.1%       |
-| LOC         | 1,952  | 3.9%       |
-| CARDINAL    | 1,348  | 2.7%       |
-| NORP        | 1,247  | 2.5%       |
-| EVENT       | 529    | 1.1%       |
-
-**观察**: TriviaQA 数据以 PERSON 类型为主 (45.7%)，而 SQuAD 的分布更均匀。两者互补使得合并数据集的实体覆盖更加全面。
-
-### 质量指标
-
-| 指标                  | SQuAD  | TriviaQA | 目标  | 状态           |
-| --------------------- | ------ | -------- | ----- | -------------- |
-| 替换成功率            | 56.0%  | 57.4%    | ≥ 60% | ⚠️ 略低但可接受 |
-| 忠实答案在 context 中 | 100.0% | 100.0%   | 100%  | ✅              |
-| Context 确实发生变化  | 100.0% | 100.0%   | 100%  | ✅              |
-| 答案确实发生替换      | 100.0% | 100.0%   | 100%  | ✅              |
-| 替换实体与原实体不同  | 100.0% | 100.0%   | 100%  | ✅              |
-| 抽样质量检查 (200条)  | 100.0% | 100.0%   | ≥ 90% | ✅              |
-
-### Context 长度统计
-
-| 指标     | SQuAD        | TriviaQA    |
-| -------- | ------------ | ----------- |
-| 平均长度 | ~600 chars   | 1,313 chars |
-| 中位数   | ~550 chars   | 1,581 chars |
-| 最小值   | ~50 chars    | 108 chars   |
-| 最大值   | ~2,500 chars | 2,122 chars |
-
-**观察**: TriviaQA 的 context 整体更长，更接近真实 RAG 场景中检索到的文档长度。
-
-## 成功与不足
-
-### 成功
-
-1. **两个数据集共 ~99K 样本**，远超 P0 目标的 10K，也超出了 P1 目标的 50K
-2. **100% 质量检查通过率**，数据可靠性高
-3. **Pipeline 完全自动化**，可复现
-4. **实体类型覆盖全面**，两个数据集互补
-
-### 不足
-
-1. **替换成功率 ~57%**，略低于 60% 预期目标。主要原因：
-   - 部分答案不是可替换的命名实体（如 "yes/no"、描述性答案）
-   - 某些答案虽是实体但 NER 未能在 context 中匹配
-   - 共指消解未实现，部分替换可能导致语义不一致
-2. **未实现 NLI 质量过滤**（P1 目标），目前仅用规则过滤
-
-## 后续建议
-
-1. **可用于训练 attention-based faithfulness loss** — 数据已就绪
-2. 考虑添加 NLI 过滤提升语义一致性
-3. 可在此数据上测试开源 LLM 的忠实率 baseline (P2)
-
-## 数据文件清单
-
-```
-experiments/data/
-├── entity_bank/                     # 实体库 (8类, 76,953 实体)
-│   ├── PERSON.json, GPE.json, ORG.json, ...
-│   └── summary.json
-├── faithfulness_qa_squad_raw.jsonl   # SQuAD: 49,094 样本
-├── faithfulness_qa_train.jsonl       # SQuAD train: 39,275
-├── faithfulness_qa_dev.jsonl         # SQuAD dev: 4,909
-├── faithfulness_qa_test.jsonl        # SQuAD test: 4,910
-├── faithfulness_triviaqa_raw.jsonl   # TriviaQA: 50,000 样本
-├── faithfulness_triviaqa_train.jsonl # TriviaQA train: 40,000
-├── faithfulness_triviaqa_dev.jsonl   # TriviaQA dev: 5,000
-└── faithfulness_triviaqa_test.jsonl  # TriviaQA test: 5,000
+    n = len(test_data)
+    print(f"Faithfulness Rate: {faithful_count/n:.1%}")
+    print(f"Parametric Rate:   {parametric_count/n:.1%}")
 ```
 
+### Reproducing the Dataset
+
+```bash
+# Install dependencies
+pip install spacy transformers datasets pandas tqdm
+python -m spacy download en_core_web_lg
+
+# Step 1: Build entity bank from SQuAD contexts
+python code/entity_bank.py --data_dir data/
+
+# Step 2: Build Faithfulness-QA from SQuAD
+python code/build_dataset.py --data_dir data/ --source squad
+
+# Step 3: Build Faithfulness-QA from TriviaQA (streaming)
+python code/build_triviaqa.py --data_dir data/ --target 50000
+
+# Step 4: Run quality analysis
+python code/quality_analysis.py --data_dir data/
+```
+
+## 🔬 Methodology
+
+### Pipeline Overview
+
+```
+┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
+│   Stage 1:       │    │   Stage 2:       │    │   Stage 3:       │    │   Stage 4:       │
+│   Entity Bank    │───▶│   NER & Answer   │───▶│  Counterfactual  │───▶│   Quality        │
+│   Construction   │    │   Entity Match   │    │  Substitution    │    │   Filtering      │
+└──────────────────┘    └──────────────────┘    └──────────────────┘    └──────────────────┘
+Extract entities        Match answer to NER     Replace entity with     6 quality checks +
+from SQuAD contexts     entity via 3-strategy   same-type alternative   80/10/10 split
+(SpaCy en_core_web_lg)  cascade                 from entity bank
+```
+
+**Stage 1**: Extract all named entities from 19,035 unique SQuAD contexts using SpaCy NER → 76,953 entity bank.
+
+**Stage 2**: For each QA sample, match the answer to a recognized entity using:
+1. Exact match (case-insensitive)
+2. Substring match (overlap ≥ 3 chars)
+3. Positional overlap (≥ 50% character overlap)
+
+**Stage 3**: Sample a type-consistent replacement entity, re-sample up to 5× for length compatibility (0.3–3.0× ratio), replace all occurrences in context.
+
+**Stage 4**: Apply 6 quality filters (presence, change, length, novelty, frequency, entity length), then split 80/10/10.
+
+## ✅ Quality Validation
+
+| Check | Pass Rate | Target |
+|-------|-----------|--------|
+| Replacement entity present in modified context | 200/200 (100%) | 100% |
+| Original entity removed from modified context | 200/200 (100%) | 100% |
+| Context actually changed | 200/200 (100%) | 100% |
+| Context length ratio within [0.5, 2.0] | 200/200 (100%) | ≥90% |
+
+## 💡 Intended Use Cases
+
+1. **Faithfulness-aware fine-tuning**: Train with `(modified_context, question) → faithful_answer` to teach models to follow context over parametric memory.
+2. **Attention-based faithfulness loss**: Supervise cross-attention weights to ensure models attend to retrieved context.
+3. **Faithfulness evaluation**: Measure the rate at which models output the faithful answer (context-grounded) vs. the original answer (parametric).
+4. **Knowledge conflict research**: Study LLM behavior when retrieved context contradicts parametric knowledge.
+
+## ⚠️ Known Limitations
+
+- **No coreference resolution**: Pronominal references to replaced entities are not updated.
+- **No NLI-based filtering**: Quality checks are rule-based; no semantic consistency verification via NLI models.
+- **Semantic plausibility**: Some substitutions are syntactically valid but semantically implausible (e.g., non-US city in "born in [City], Illinois").
+- **English only**: Current pipeline and entity bank support English only.
+
+## 📄 Citation
+
+If you use this dataset in your research, please cite:
+
+```bibtex
+@misc{zhang2026faithfulnessqa,
+  title={Faithfulness-QA: A Counterfactual Entity Substitution Dataset for Training Context-Faithful RAG Models},
+  author={Zhang, Qiang},
+  year={2026},
+  url={https://github.com/qzhangFDU/faithfulness-qa-dataset}
+}
+```
+
+## 📚 Related Work
+
+- **Self-RAG** (Asai et al., ICLR 2024): Self-reflective retrieval-augmented generation
+- **FaithfulRAG** (Zhang et al., ACL 2025): Fact-level conflict modeling for context-faithful RAG
+- **FaithEval** (Ming et al., ICLR 2025): Faithfulness evaluation benchmark (4.9K samples)
+- **CounterFact** (Meng et al., NeurIPS 2022): Counterfactual dataset for knowledge editing
+- **Knowledge Conflicts Survey** (Xu et al., EMNLP 2024): Comprehensive survey of LLM knowledge conflicts
+
+## 📜 License
+
+This project is released under the [MIT License](LICENSE).
+
+The source datasets (SQuAD, TriviaQA) are used under their respective licenses.
