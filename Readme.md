@@ -3,6 +3,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Dataset: 99K](https://img.shields.io/badge/Dataset-99K_samples-blue.svg)]()
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-yellow.svg)]()
+[![arXiv](https://img.shields.io/badge/arXiv-2604.25313-b31b1b.svg)](https://arxiv.org/abs/2604.25313)
+[![HuggingFace Dataset](https://img.shields.io/badge/🤗_HuggingFace-Dataset-yellow.svg)](https://huggingface.co/datasets/Laurie/faithfulness-qa-dataset)
 
 ## 📖 Overview
 
